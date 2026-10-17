@@ -219,6 +219,10 @@ export class MemoryGraphWebGL {
   private edgePairs = new Uint32Array(0);
   private idValues: Float32Array | null = null;
   private coreId = -1;
+  // Slot order used by the bounded label pass: core first, then SOURCE files, then the rest.
+  // Projecting slots 0..limit-1 in upload order meant a focused node that happened to upload late
+  // could never be labelled, while the 2D path labelled it.
+  private labelPriority = new Uint32Array(0);
 
   /** Returns null when WebGL2 is unavailable, so the caller can keep the 2D fallback. */
   static create(canvas: HTMLCanvasElement): MemoryGraphWebGL | null {
@@ -324,6 +328,7 @@ export class MemoryGraphWebGL {
     const offsets = new Float32Array(nodeStride);
     const colors = new Float32Array(nodeStride);
     const sizes = new Float32Array(nodes.length);
+    const sourceSlots: number[] = [];
     let slot = 0;
 
     for (const node of nodes) {
@@ -342,10 +347,25 @@ export class MemoryGraphWebGL {
       colors[slot * 3 + 2] = b;
       sizes[slot] = isMemoryCoreLabel(node.label) ? Math.max(style.size, 11) : style.size;
       if (isMemoryCoreLabel(node.label)) this.coreId = slot;
+      if (node.type === "SOURCE") sourceSlots.push(slot);
       slot += 1;
     }
     this.nodeCount = slot;
     this.nodeOffsets = offsets.subarray(0, this.nodeCount * 3);
+    // Label candidate order, built once per upload: core, then SOURCE files, then the rest. The
+    // per-frame pass only walks this array, so the bound stays fixed while the *choice* of which
+    // nodes get the budget no longer depends on upload position. The focused node is promoted by
+    // `projectAll`, since focus changes without a graph upload.
+    {
+      const isSource = new Uint8Array(this.nodeCount);
+      for (const sourceSlot of sourceSlots) if (sourceSlot < this.nodeCount) isSource[sourceSlot] = 1;
+      const order = new Uint32Array(this.nodeCount);
+      let cursor = 0;
+      if (this.coreId >= 0 && this.coreId < this.nodeCount) order[cursor++] = this.coreId;
+      for (let i = 0; i < this.nodeCount; i++) if (isSource[i] && i !== this.coreId) order[cursor++] = i;
+      for (let i = 0; i < this.nodeCount; i++) if (!isSource[i] && i !== this.coreId) order[cursor++] = i;
+      this.labelPriority = order;
+    }
     // Adjacency is only needed for focus highlighting, so it is built on the first `setFocus` call
     // with a real selection instead of on every graph upload — that allocation was O(edges) with one
     // array per node and showed up as a long task at 50,000 nodes.
@@ -507,22 +527,29 @@ export class MemoryGraphWebGL {
    * Screen placements for the label pass. Bounded by `limit` so the caller can measure text for a
    * fixed number of candidates no matter how large the graph is.
    */
-  projectAll(camera: MemoryCamera3D, width: number, height: number, scale: number, limit: number): Placement[] {
+  projectAll(camera: MemoryCamera3D, width: number, height: number, scale: number, limit: number, focusId?: string | null): Placement[] {
     const placements: Placement[] = [];
     const cosY = Math.cos(camera.yaw), sinY = Math.sin(camera.yaw);
     const cosP = Math.cos(camera.pitch), sinP = Math.sin(camera.pitch);
-    const count = Math.min(this.nodeCount, limit);
-    for (let i = 0; i < count; i++) {
-      const px = this.nodeOffsets[i * 3] ?? 0;
-      const py = this.nodeOffsets[i * 3 + 1] ?? 0;
-      const pz = this.nodeOffsets[i * 3 + 2] ?? 0;
+    const focusSlot = focusId === undefined || focusId === null ? -1 : (this.index.get(focusId) ?? -1);
+    const order = this.labelPriority;
+    const orderLength = Math.min(order.length, this.nodeCount);
+    // k === -1 is the focus slot: it is promoted ahead of the ordered candidates without rebuilding
+    // the array on every frame.
+    for (let k = -1; k < orderLength && placements.length < limit; k++) {
+      const slot = k < 0 ? focusSlot : order[k]!;
+      if (slot < 0 || slot >= this.nodeCount) continue;
+      if (k >= 0 && slot === focusSlot) continue;
+      const px = this.nodeOffsets[slot * 3] ?? 0;
+      const py = this.nodeOffsets[slot * 3 + 1] ?? 0;
+      const pz = this.nodeOffsets[slot * 3 + 2] ?? 0;
       const x = px * cosY + pz * sinY;
       const depth = -px * sinY + pz * cosY;
       const y = py * cosP - depth * sinP;
       const z = py * sinP + depth * cosP;
       const perspective = 650 / Math.max(120, 650 + z * scale);
       placements.push({
-        id: this.ids[i]!,
+        id: this.ids[slot]!,
         x: width / 2 + x * scale * camera.zoom * perspective,
         y: height / 2 - y * scale * camera.zoom * perspective,
         z,

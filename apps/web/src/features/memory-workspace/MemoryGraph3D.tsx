@@ -103,7 +103,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
         if (focusDirty || lastSelection !== (hover ?? selected)) { renderer.setFocus(focus); lastSelection = hover ?? selected; focusDirty = false; }
         renderer.render(cameraRef.current, focus, width, height, scale, dpr);
         const budget = Math.min(nodes.length, MAX_LABEL_SCAN);
-        drawLabels(renderer.projectAll(cameraRef.current, width, height, scale, budget), focus, cameraRef.current.zoom);
+        drawLabels(renderer.projectAll(cameraRef.current, width, height, scale, budget, focus), focus, cameraRef.current.zoom);
         // Points are only needed for the 2D hit test; the GL path picks on the GPU.
         points = [];
       } else if (context) {
