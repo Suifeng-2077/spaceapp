@@ -38,6 +38,7 @@ if (!CHROME) {
   process.exit(2);
 }
 
+let cleanup = () => {};
 const result = await new Promise((resolve) => {
   let settled = false;
   const settle = (value) => { if (!settled) { settled = true; resolve(value); } };
@@ -68,9 +69,13 @@ const result = await new Promise((resolve) => {
       catch { try { chrome.kill('SIGKILL'); } catch { /* already gone */ } }
       server.close();
     };
-    setTimeout(() => { settle({ ok: false, reason: `timeout after ${TIMEOUT_MS}ms` }); stop(); }, TIMEOUT_MS);
+    const timer = setTimeout(() => { settle({ ok: false, reason: `timeout after ${TIMEOUT_MS}ms` }); stop(); }, TIMEOUT_MS);
+    // Exposed to the caller so the success path tears Chrome down too. `process.exit` would
+    // otherwise leave it running on the fixed profile and the next run would fight it for that dir.
+    cleanup = () => { clearTimeout(timer); stop(); };
   });
 });
+cleanup();
 
 console.log(JSON.stringify(result, null, 1));
 process.exit(result.ok ? 0 : 1);

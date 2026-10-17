@@ -314,6 +314,9 @@ export class MemoryGraphWebGL {
     const gl = this.gl;
     this.ids = [];
     this.index = new Map();
+    // A core node is optional per graph; without this reset a graph that has none inherits the
+    // previous graph's slot and the shader highlights an unrelated node.
+    this.coreId = -1;
     // Preallocated typed arrays, written by index. Building `number[]` with push and converting
     // afterwards allocated and copied ~1.2 MB of temporary arrays per upload, which is what turned
     // the first upload into a >100 ms main-thread task at 50,000 nodes.
@@ -390,6 +393,11 @@ export class MemoryGraphWebGL {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.idBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, idValues, gl.DYNAMIC_DRAW);
     }
+    // `neighbors` is written by index in `setFocus`, so it has to match the node count. It used to
+    // stay `new Uint8Array(0)`, and typed arrays ignore out-of-bounds stores, so every neighbour
+    // write was silently dropped: the instanced attribute uploaded empty and focused neighbours
+    // never faded. Reallocate only when the count changes, since callers may call this per render.
+    if (this.neighbors.length !== this.nodeCount) this.neighbors = new Uint8Array(this.nodeCount);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.neighborBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, this.neighbors, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeOffsetBuffer);

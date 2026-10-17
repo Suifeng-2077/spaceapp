@@ -27,6 +27,10 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
   const labelRef = useRef<HTMLCanvasElement>(null);
   const cameraRef = useRef<MemoryCamera3D>({ ...DEFAULT_MEMORY_CAMERA });
   const redrawRef = useRef<() => void>(() => {});
+  // Set when the data props change so the next frame re-uploads the graph. Without this the GPU kept
+  // the first upload: the streamed layout preview and any node-set change never reached `setGraph`,
+  // so the 3D view stayed empty or frozen until a resize.
+  const graphDirtyRef = useRef(true);
   const current = useRef({ nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode });
   current.current = { nodes, edges, positions, coordinates, showTitles, selectedNodeId, onSelectNode };
   useEffect(() => {
@@ -47,7 +51,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
     let points: Array<{ id: string; x: number; y: number; z: number; radius: number }> = [];
     const pointers = new Map<number, { x: number; y: number }>();
     let dragged = false, downX = 0, downY = 0;
-    let graphDirty = true, focusDirty = true, lastSelection: string | null = null;
+    let focusDirty = true, lastSelection: string | null = null;
 
     const sceneExtent = () => Math.max(60, ...[...current.current.coordinates.values()].map(p => Math.hypot(p.x, p.y, p.z)));
     const sceneScale = () => Math.min(width, height) * 0.4 / sceneExtent();
@@ -95,7 +99,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       labelContext.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       if (renderer) {
-        if (graphDirty) { renderer.setGraph(nodes, edges, coordinates, positions); graphDirty = false; focusDirty = true; }
+        if (graphDirtyRef.current) { renderer.setGraph(nodes, edges, coordinates, positions); graphDirtyRef.current = false; focusDirty = true; }
         if (focusDirty || lastSelection !== (hover ?? selected)) { renderer.setFocus(focus); lastSelection = hover ?? selected; focusDirty = false; }
         renderer.render(cameraRef.current, focus, width, height, scale, dpr);
         const budget = Math.min(nodes.length, MAX_LABEL_SCAN);
@@ -152,7 +156,7 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
       labelCanvas.width = canvas.width; labelCanvas.height = canvas.height;
       labelCanvas.style.width = `${width}px`; labelCanvas.style.height = `${height}px`;
-      graphDirty = true;
+      graphDirtyRef.current = true;
       schedule();
     };
     const hit = (x: number, y: number) => {
@@ -202,7 +206,8 @@ export function MemoryGraph3D({ nodes, edges, positions, coordinates, showTitles
       renderer?.dispose();
     };
   }, []);
-  useEffect(() => { redrawRef.current(); }, [nodes, edges, positions, coordinates, showTitles, selectedNodeId]);
+  // Data changed (streamed preview batch, new node set, new positions): re-upload before redrawing.
+  useEffect(() => { graphDirtyRef.current = true; redrawRef.current(); }, [nodes, edges, positions, coordinates, showTitles, selectedNodeId]);
   return <div className="memory-3d-surface">
     <canvas ref={canvasRef} tabIndex={0} role="application" aria-label="3D memory graph. Drag or use arrow keys to rotate 360 degrees. Scroll or pinch to zoom. Click a node to open." aria-busy={loading} data-titles-visible={showTitles} data-layout-volume={volumeRatio.toFixed(4)} />
     <canvas ref={labelRef} aria-hidden="true" style={{ position: "absolute", inset: 0, pointerEvents: "none" }} />
