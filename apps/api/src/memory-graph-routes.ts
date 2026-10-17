@@ -313,8 +313,14 @@ function memoryIssuesRevisionHash(snapshotRevision: string, states: MemoryIssueS
 }
 
 // Keep the same payload budget while retaining the taxonomy needed to interpret a large archive.
-export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[]): MemoryGraphNode[] {
-  if (nodes.length <= 2000) return nodes;
+// `limit` is the caller's node budget: omitted it is the historical 2,000, and the 3D view can ask
+// for up to OVERVIEW_MAX_NODES (schema-enforced) to load the full graph instead of a sample.
+export const OVERVIEW_DEFAULT_NODE_LIMIT = 2000;
+export const OVERVIEW_MAX_NODE_LIMIT = 50000;
+export const OVERVIEW_EDGES_PER_NODE = 3;
+
+export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraphEdge[], limit: number = OVERVIEW_DEFAULT_NODE_LIMIT): MemoryGraphNode[] {
+  if (nodes.length <= limit) return nodes;
   const members = new Map<string, Set<string>>();
   const explicit = new Set<string>();
   const byId = new Map(nodes.map(node => [node.id, node]));
@@ -336,7 +342,7 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     if (first) selected.set(first, byId.get(first)!);
   }
   for (const node of nodes) {
-    if (selected.size >= 2000) break;
+    if (selected.size >= limit) break;
     selected.set(node.id, node);
   }
   return [...selected.values()];
@@ -385,12 +391,14 @@ export function registerMemoryGraphRoutes(
       matchingNodeIds.has(edge.target) &&
       (query.relationMode !== "RELATIONS" || anchorIds.has(edge.source) || anchorIds.has(edge.target))
     );
-    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges);
+    const nodeLimit = Math.min(query.limit ?? OVERVIEW_DEFAULT_NODE_LIMIT, OVERVIEW_MAX_NODE_LIMIT);
+    const edgeLimit = Math.min(nodeLimit * OVERVIEW_EDGES_PER_NODE, OVERVIEW_MAX_NODE_LIMIT * OVERVIEW_EDGES_PER_NODE);
+    const selectedNodes = selectOverviewNodes(matchingNodes, matchingEdges, nodeLimit);
     const selectedNodeIds = new Set(selectedNodes.map((node) => node.id));
     const selectedEdges = matchingEdges
       .filter((edge) => selectedNodeIds.has(edge.source) && selectedNodeIds.has(edge.target))
       .sort((a, b) => Number(b.type === "CONTAINS" || b.type === "DERIVED_FROM") - Number(a.type === "CONTAINS" || a.type === "DERIVED_FROM"))
-      .slice(0, 6000);
+      .slice(0, edgeLimit);
     const data = memoryGraphOverviewPayloadSchema.parse({
       version: snapshot.version,
       layoutVersion: snapshot.layoutVersion,
