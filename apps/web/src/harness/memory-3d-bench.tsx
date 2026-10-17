@@ -117,7 +117,7 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
   let previous = performance.now();
   let frame = 0;
 
-  const step = () => {
+  const step = async () => {
     const t = performance.now();
     const delta = t - previous;
     previous = t;
@@ -142,13 +142,22 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
     const sorted = [...deltas].sort((a, b) => a - b);
     const at = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] ?? 0;
 
-    // What the one-shot layout used to cost the main thread: run the same 180 steps, but in chunks
-    // so this measurement does not itself create the long task it is measuring.
+    // What the one-shot layout used to cost the main thread: run the same 180 steps, yielding to the
+    // event loop between chunks. Without that yield the whole loop is a single task, so it creates
+    // the very long task it claims to measure and the observer has nothing to report yet.
+    const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
     const layoutStarted = performance.now();
     const stepper = createMemoryNetworkLayout3D(nodes, edges);
-    while (stepper.completedSteps < stepper.totalSteps) stepper.runSteps(12);
+    while (stepper.completedSteps < stepper.totalSteps) {
+      stepper.runSteps(12);
+      await yieldToEventLoop();
+    }
     const layoutTotalMs = performance.now() - layoutStarted;
     void stepper.snapshot();
+    // `PerformanceObserver` delivers on a later task, so give it two before reading its buffer;
+    // otherwise `over100ms` reads an empty list and under-reports blocking that did happen.
+    await yieldToEventLoop();
+    await yieldToEventLoop();
 
     const rotation = canvas.dataset.rotation ?? "";
     const result = {

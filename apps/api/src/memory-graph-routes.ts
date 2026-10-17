@@ -335,15 +335,27 @@ export function selectOverviewNodes(nodes: MemoryGraphNode[], edges: MemoryGraph
     members.get(b.id)!.size - members.get(a.id)!.size || a.id.localeCompare(b.id)
   ).slice(0, 160);
   const sources = nodes.filter(node => node.type === "SOURCE").sort((a, b) => Number(isMemoryCoreFile(b.label)) - Number(isMemoryCoreFile(a.label)) || a.id.localeCompare(b.id)).slice(0, 120);
-  const selected = new Map([...sources, ...topics].map(node => [node.id, node]));
-  // Give every reserved topic a real visible neighbor, even for sparse explicit tags.
+  // Reservations are charged against the budget as they are taken. Previously every source and topic
+  // was inserted first and the fill loop only stopped once the map was already full, so a small
+  // `limit` was ignored: two source nodes came back for `limit=1`, and the response could exceed the
+  // caller's cap by up to the size of both reservations.
+  const selected = new Map<string, MemoryGraphNode>();
+  const add = (node: MemoryGraphNode | undefined): void => {
+    if (!node || selected.size >= limit) return;
+    selected.set(node.id, node);
+  };
+  for (const node of sources) add(node);
+  for (const node of topics) add(node);
+  // Give every *selected* topic a real visible neighbor, even for sparse explicit tags. Topics that
+  // did not fit the budget are skipped rather than dragging a neighbor in over the cap.
   for (const topic of topics) {
+    if (!selected.has(topic.id)) continue;
     const first = [...members.get(topic.id)!].sort()[0];
-    if (first) selected.set(first, byId.get(first)!);
+    if (first) add(byId.get(first));
   }
   for (const node of nodes) {
     if (selected.size >= limit) break;
-    selected.set(node.id, node);
+    add(node);
   }
   return [...selected.values()];
 }

@@ -64,4 +64,30 @@ describe("selectOverviewNodes limit", () => {
   it("上限常量与服务端硬上限一致", () => {
     expect(OVERVIEW_MAX_NODE_LIMIT).toBe(50000);
   });
+
+  // 回归：预留节点曾经不计入预算。两个 SOURCE + 若干 TOPIC 会在填充循环之前就进集合，
+  // 而那条循环只会在超限后 break、从不裁剪，于是 limit=1 也会返回两个 SOURCE。
+  it("limit 小于预留数量时也不会超出 limit", () => {
+    const { nodes, edges } = build(6000);
+    for (const limit of [1, 2, 3, 5, 17]) {
+      const selected = selectOverviewNodes(nodes, edges, limit);
+      expect(selected.length, `limit=${limit}`).toBeLessThanOrEqual(limit);
+    }
+  });
+
+  it("limit=1 时只返回一个节点，且优先给核心 SOURCE", () => {
+    const { nodes, edges } = build(6000);
+    const selected = selectOverviewNodes(nodes, edges, 1);
+    expect(selected).toHaveLength(1);
+    expect(selected[0].type).toBe("SOURCE");
+  });
+
+  it("预算被预留占满时，不再额外拉入 topic 的邻居节点", () => {
+    const { nodes, edges } = build(6000);
+    const selected = selectOverviewNodes(nodes, edges, 2);
+    expect(selected.length).toBeLessThanOrEqual(2);
+    // 每个入选节点都必须来自原始节点集合，不能是凭空塞进来的边端点
+    const known = new Set(nodes.map((node) => node.id));
+    for (const node of selected) expect(known.has(node.id)).toBe(true);
+  });
 });
