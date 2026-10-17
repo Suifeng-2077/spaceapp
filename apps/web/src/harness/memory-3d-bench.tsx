@@ -142,10 +142,18 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
     const sorted = [...deltas].sort((a, b) => a - b);
     const at = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))] ?? 0;
 
-    // What the one-shot layout used to cost the main thread: run the same 180 steps, yielding to the
-    // event loop between chunks. Without that yield the whole loop is a single task, so it creates
-    // the very long task it claims to measure and the observer has nothing to report yet.
+    // `PerformanceObserver` delivers on a later task, so give it two before reading its buffer;
+    // otherwise the count reads as zero and under-reports blocking that did happen.
     const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await yieldToEventLoop();
+    await yieldToEventLoop();
+    // Snapshot the frame phase here, BEFORE the layout simulation below. That simulation is a
+    // deliberate main-thread reproduction of the cost the worker moves off-thread, so counting it in
+    // the same bucket would measure the harness rather than the view.
+    const frameLongTasks = longTasks.slice();
+
+    // What the one-shot layout used to cost the main thread: run the same 180 steps, yielding to the
+    // event loop between chunks so the loop does not become one unbounded task.
     const layoutStarted = performance.now();
     const stepper = createMemoryNetworkLayout3D(nodes, edges);
     while (stepper.completedSteps < stepper.totalSteps) {
@@ -154,10 +162,14 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
     }
     const layoutTotalMs = performance.now() - layoutStarted;
     void stepper.snapshot();
-    // `PerformanceObserver` delivers on a later task, so give it two before reading its buffer;
-    // otherwise `over100ms` reads an empty list and under-reports blocking that did happen.
     await yieldToEventLoop();
     await yieldToEventLoop();
+    const layoutLongTasks = longTasks.slice(frameLongTasks.length);
+    const summarize = (entries: typeof longTasks) => ({
+      count: entries.length,
+      over100ms: entries.filter((entry) => entry.duration > 100).length,
+      worst: entries.length ? Math.max(...entries.map((entry) => entry.duration)) : 0,
+    });
 
     const rotation = canvas.dataset.rotation ?? "";
     const result = {
@@ -174,11 +186,12 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
       rotationChanged: rotation !== "0.300,-0.150",
       rotationSamples,
       longtasks: {
-        count: longTasks.length,
-        over100ms: longTasks.filter((entry) => entry.duration > 100).length,
-        worst: longTasks.length ? Math.max(...longTasks.map((entry) => entry.duration)) : 0,
-        entries: longTasks.slice(0, 6),
+        ...summarize(frameLongTasks),
+        entries: frameLongTasks.slice(0, 6),
       },
+      // Reported separately: this is the cost the worker is supposed to take off the main thread,
+      // measured on the main thread on purpose. Folding it into `longtasks` would grade the harness.
+      longtasks_during_layout_sim: summarize(layoutLongTasks),
       // Total cost of 180 layout steps at this size. If this ran as one task it would block the
       // main thread for this long; the worker now runs it in 15 chunks off-thread.
       layout_180_steps_total_ms: +layoutTotalMs.toFixed(0),
